@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Porter Transaction Scraper",
+  "version": "1.0",
+  "description": "Automated transaction data collection for Porter PFE dashboard",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://pfe.porter.in/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [{
+    "matches": ["https://pfe.porter.in/dashboard/payments*"],
+    "js": ["content.js"]
+  }],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Porter Transaction Scraper"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
