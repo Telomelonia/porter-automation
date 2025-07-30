@@ -2,13 +2,8 @@
   "manifest_version": 3,
   "name": "Porter Transaction Scraper",
   "version": "1.0",
-  "description": "Automated transaction data collection for Porter PFE dashboard",
-  "permissions": [
-    "activeTab",
-    "storage",
-    "alarms",
-    "notifications"
-  ],
+  "description": "Extract transaction data to CSV",
+  "permissions": ["activeTab"],
   "host_permissions": [
     "https://pfe.porter.in/*"
   ],
