@@ -10,37 +10,66 @@ class PorterTripExtractor {
     this.endDate = endDate;
   }
 
-  parseDate(dateString) {
+  parsePorterDate(dateString) {
     // Convert DD/MM/YYYY to Date object
     const [day, month, year] = dateString.split('/');
-    return new Date(2000 + parseInt(year), parseInt(month) - 1, parseInt(day));
+    return new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
   }
 
-  isDateInRange(dateString) {
+  parseInputDate(dateString) {
+    // Convert YYYY-MM-DD to Date object
+    return new Date(dateString + 'T00:00:00');
+  }
+
+  isDateInRange(porterDateString) {
     if (!this.startDate || !this.endDate) return true; // If no range set, include all
     
-    const tripDate = this.parseDate(dateString);
-    const start = new Date(this.startDate);
-    const end = new Date(this.endDate);
-    
-    return tripDate >= start && tripDate <= end;
+    try {
+      const tripDate = this.parsePorterDate(porterDateString);
+      const start = this.parseInputDate(this.startDate);
+      const end = this.parseInputDate(this.endDate);
+      
+      // Set time to start of day for accurate comparison
+      tripDate.setHours(0, 0, 0, 0);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(0, 0, 0, 0);
+      
+      console.log(`Comparing dates: Trip=${tripDate.toDateString()}, Start=${start.toDateString()}, End=${end.toDateString()}`);
+      console.log(`In range: ${tripDate >= start && tripDate <= end}`);
+      
+      return tripDate >= start && tripDate <= end;
+    } catch (error) {
+      console.error('Error parsing date:', porterDateString, error);
+      return false;
+    }
   }
 
   extractTripData() {
     const trips = [];
     
-    // Look for table rows with trip data
-    const tableRows = document.querySelectorAll('tr.table-row-2');
+    // Look for table rows with trip data - try multiple selectors
+    let tableRows = document.querySelectorAll('tr.table-row-2');
+    
+    if (tableRows.length === 0) {
+      // Try alternative selectors
+      tableRows = document.querySelectorAll('tr.MuiTableRow-root');
+      console.log(`Found ${tableRows.length} rows with alternative selector`);
+    }
     
     if (tableRows.length === 0) {
       console.log('No trip rows found - page may still be loading');
       return null;
     }
 
+    console.log(`Processing ${tableRows.length} rows...`);
+
     tableRows.forEach((row, index) => {
       try {
         const cells = row.querySelectorAll('td');
-        if (cells.length < 10) return; // Ensure we have all required columns
+        if (cells.length < 10) {
+          console.log(`Row ${index + 1}: Only ${cells.length} cells, skipping`);
+          return;
+        }
 
         // Extract data from each cell based on the table structure
         const startDate = cells[1]?.textContent?.trim() || '';
@@ -51,20 +80,23 @@ class PorterTripExtractor {
         const vehicle = cells[6]?.textContent?.trim() || '';
         
         // Extract order status
-        const orderStatusDiv = cells[7]?.querySelector('.c-order-status div');
-        const orderStatus = orderStatusDiv?.textContent?.trim() || '';
+        const orderStatusDiv = cells[7]?.querySelector('.c-order-status div') || cells[7]?.querySelector('div');
+        const orderStatus = orderStatusDiv?.textContent?.trim() || cells[7]?.textContent?.trim() || '';
         
         // Extract payment status
-        const paymentStatusDiv = cells[8]?.querySelector('.c-order-payment-status .status');
-        const paymentStatus = paymentStatusDiv?.textContent?.trim() || '';
+        const paymentStatusDiv = cells[8]?.querySelector('.c-order-payment-status .status') || cells[8]?.querySelector('.status') || cells[8]?.querySelector('div');
+        const paymentStatus = paymentStatusDiv?.textContent?.trim() || cells[8]?.textContent?.trim() || '';
         
         // Extract amount
         const amountCell = cells[9];
         const amountText = amountCell?.textContent?.trim() || '₹ 0';
         const cleanAmount = amountText.replace(/[₹,\s]/g, '');
 
+        console.log(`Row ${index + 1}: Date=${startDate}, CRN=${crnNumber}`);
+
         // Check if date is in range (if range is set)
         if (startDate && this.isDateInRange(startDate)) {
+          console.log(`✓ Including row ${index + 1} in results`);
           trips.push({
             extractedAt: new Date().toISOString(),
             startDate: startDate,
@@ -79,12 +111,15 @@ class PorterTripExtractor {
             amountFormatted: amountText,
             rowIndex: index + 1
           });
+        } else {
+          console.log(`✗ Excluding row ${index + 1} - date not in range or invalid`);
         }
       } catch (error) {
         console.error(`Error processing row ${index + 1}:`, error);
       }
     });
 
+    console.log(`Total trips found in date range: ${trips.length}`);
     return trips;
   }
 
@@ -159,7 +194,7 @@ class PorterTripExtractor {
     }
 
     // Additional wait for dynamic content
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     const trips = this.extractTripData();
     
