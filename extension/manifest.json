@@ -1,22 +1,19 @@
 {
   "manifest_version": 3,
-  "name": "Porter Transaction Scraper",
+  "name": "Porter Trip Data Scraper",
   "version": "1.0",
-  "description": "Extract transaction data to CSV",
+  "description": "Extract trip data to CSV with date range selection",
   "permissions": ["activeTab"],
   "host_permissions": [
     "https://pfe.porter.in/*"
   ],
-  "background": {
-    "service_worker": "background.js"
-  },
   "content_scripts": [{
-    "matches": ["https://pfe.porter.in/dashboard/payments*"],
+    "matches": ["https://pfe.porter.in/dashboard/trip_details*"],
     "js": ["content.js"]
   }],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Porter Transaction Scraper"
+    "default_title": "Porter Trip Data Scraper"
   },
   "icons": {
     "16": "icon16.png",

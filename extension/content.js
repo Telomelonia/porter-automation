@@ -1,82 +1,82 @@
-// Content Script - Runs on Porter pages
-class PorterDataExtractor {
+// Content Script - Runs on Porter trip details pages
+class PorterTripExtractor {
   constructor() {
-    this.currentDate = this.getCurrentDateString();
-    this.githubConfig = null;
-    this.loadConfig();
+    this.startDate = null;
+    this.endDate = null;
   }
 
-  async loadConfig() {
-    try {
-      const result = await chrome.storage.sync.get(['githubConfig']);
-      this.githubConfig = result.githubConfig;
-    } catch (error) {
-      console.error('Failed to load config:', error);
-    }
+  setDateRange(startDate, endDate) {
+    this.startDate = startDate;
+    this.endDate = endDate;
   }
 
-  getCurrentDateString() {
-    const today = new Date();
-    const day = String(today.getDate()).padStart(2, '0');
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const year = String(today.getFullYear()).slice(-2);
-    return `${day}/${month}/${year}`;
+  parseDate(dateString) {
+    // Convert DD/MM/YYYY to Date object
+    const [day, month, year] = dateString.split('/');
+    return new Date(2000 + parseInt(year), parseInt(month) - 1, parseInt(day));
   }
 
-  extractTransactionData() {
-    const transactions = [];
+  isDateInRange(dateString) {
+    if (!this.startDate || !this.endDate) return true; // If no range set, include all
     
-    // Wait for data to load
-    const transactionRows = document.querySelectorAll('tr.table-row');
+    const tripDate = this.parseDate(dateString);
+    const start = new Date(this.startDate);
+    const end = new Date(this.endDate);
     
-    if (transactionRows.length === 0) {
-      console.log('No transaction rows found - page may still be loading');
+    return tripDate >= start && tripDate <= end;
+  }
+
+  extractTripData() {
+    const trips = [];
+    
+    // Look for table rows with trip data
+    const tableRows = document.querySelectorAll('tr.table-row-2');
+    
+    if (tableRows.length === 0) {
+      console.log('No trip rows found - page may still be loading');
       return null;
     }
 
-    transactionRows.forEach((row, index) => {
+    tableRows.forEach((row, index) => {
       try {
         const cells = row.querySelectorAll('td');
-        if (cells.length < 4) return;
+        if (cells.length < 10) return; // Ensure we have all required columns
 
-        // Extract date
-        const dateCell = cells[1];
-        const dateText = dateCell?.textContent?.trim();
-        const dateMatch = dateText?.match(/(\d{2}\/\d{2}\/\d{2})/);
-        const timeMatch = dateText?.match(/(\d{1,2}:\d{2}\s*[AP]M)/i);
-
-        if (!dateMatch) return;
-
-        const transactionDate = dateMatch[1];
+        // Extract data from each cell based on the table structure
+        const startDate = cells[1]?.textContent?.trim() || '';
+        const crnNumber = cells[2]?.textContent?.trim() || '';
+        const city = cells[3]?.textContent?.trim() || '';
+        const customerName = cells[4]?.textContent?.trim() || '';
+        const phoneNumber = cells[5]?.textContent?.trim() || '';
+        const vehicle = cells[6]?.textContent?.trim() || '';
         
-        // Only process today's transactions
-        if (transactionDate === this.currentDate) {
-          const transactionTime = timeMatch ? timeMatch[1] : 'Time not found';
-          
-          // Extract user
-          const userCell = cells[2];
-          const user = userCell?.textContent?.trim() || 'Unknown User';
-          
-          // Extract amount
-          const amountCell = cells[3];
-          const amountDiv = amountCell?.querySelector('#amount');
-          const amountText = amountDiv?.textContent?.trim() || 'Amount not found';
-          
-          // Determine transaction type
-          const isCredit = amountDiv?.classList.contains('status-green') || amountText.includes('+');
-          const transactionType = isCredit ? 'Credit' : 'Debit';
-          
-          // Clean amount
-          const cleanAmount = amountText.replace(/[₹,+\s]/g, '');
+        // Extract order status
+        const orderStatusDiv = cells[7]?.querySelector('.c-order-status div');
+        const orderStatus = orderStatusDiv?.textContent?.trim() || '';
+        
+        // Extract payment status
+        const paymentStatusDiv = cells[8]?.querySelector('.c-order-payment-status .status');
+        const paymentStatus = paymentStatusDiv?.textContent?.trim() || '';
+        
+        // Extract amount
+        const amountCell = cells[9];
+        const amountText = amountCell?.textContent?.trim() || '₹ 0';
+        const cleanAmount = amountText.replace(/[₹,\s]/g, '');
 
-          transactions.push({
+        // Check if date is in range (if range is set)
+        if (startDate && this.isDateInRange(startDate)) {
+          trips.push({
             extractedAt: new Date().toISOString(),
-            date: transactionDate,
-            time: transactionTime,
-            user: user,
+            startDate: startDate,
+            crnNumber: crnNumber,
+            city: city,
+            customerName: customerName,
+            phoneNumber: phoneNumber,
+            vehicle: vehicle,
+            orderStatus: orderStatus,
+            paymentStatus: paymentStatus,
             amount: cleanAmount,
             amountFormatted: amountText,
-            type: transactionType,
             rowIndex: index + 1
           });
         }
@@ -85,99 +85,71 @@ class PorterDataExtractor {
       }
     });
 
-    return transactions;
+    return trips;
   }
 
-  async sendDataToGitHub(transactions) {
-    if (!this.githubConfig || !this.githubConfig.repoOwner || !this.githubConfig.repoName || !this.githubConfig.token) {
-      console.error('GitHub configuration not found');
-      return false;
+  generateCSV(trips) {
+    if (!trips || trips.length === 0) {
+      return 'No data found for the selected date range';
     }
 
-    const payload = {
-      timestamp: new Date().toISOString(),
-      date: this.currentDate,
-      transactionCount: transactions ? transactions.length : 0,
-      transactions: transactions || [],
-      summary: transactions ? this.calculateSummary(transactions) : null
-    };
+    // CSV headers
+    const headers = [
+      'Start Date',
+      'CRN Number', 
+      'City',
+      'Customer Name',
+      'Phone Number',
+      'Vehicle',
+      'Order Status',
+      'Payment Status',
+      'Amount',
+      'Extracted At'
+    ];
 
-    try {
-      const url = `https://api.github.com/repos/${this.githubConfig.repoOwner}/${this.githubConfig.repoName}/dispatches`;
-      
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.githubConfig.token}`,
-          'Content-Type': 'application/json',
-          'X-GitHub-Api-Version': '2022-11-28'
-        },
-        body: JSON.stringify({
-          event_type: 'porter-data',
-          client_payload: {
-            data: payload,
-            timestamp: new Date().toISOString()
-          }
-        })
-      });
-
-      if (response.ok) {
-        console.log('Data sent successfully to GitHub');
-        // Store success status
-        chrome.storage.local.set({
-          lastSync: new Date().toISOString(),
-          lastSyncStatus: 'success',
-          lastDataCount: transactions ? transactions.length : 0
-        });
-        return true;
-      } else {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
-    } catch (error) {
-      console.error('Failed to send data:', error);
-      chrome.storage.local.set({
-        lastSync: new Date().toISOString(),
-        lastSyncStatus: 'failed',
-        error: error.message
-      });
-      return false;
-    }
-  }
-
-  calculateSummary(transactions) {
-    let totalCredit = 0;
-    let totalDebit = 0;
-    let creditCount = 0;
-    let debitCount = 0;
-
-    transactions.forEach(transaction => {
-      const amount = parseFloat(transaction.amount.replace(/,/g, ''));
-      if (transaction.type === 'Credit') {
-        totalCredit += amount;
-        creditCount++;
-      } else {
-        totalDebit += amount;
-        debitCount++;
-      }
+    // Convert trips to CSV rows
+    const csvRows = [headers.join(',')];
+    
+    trips.forEach(trip => {
+      const row = [
+        trip.startDate,
+        trip.crnNumber,
+        trip.city,
+        `"${trip.customerName}"`, // Quote names in case they contain commas
+        trip.phoneNumber,
+        trip.vehicle,
+        trip.orderStatus,
+        trip.paymentStatus,
+        trip.amount,
+        trip.extractedAt
+      ];
+      csvRows.push(row.join(','));
     });
 
-    return {
-      totalTransactions: transactions.length,
-      creditTransactions: creditCount,
-      debitTransactions: debitCount,
-      totalCreditAmount: totalCredit,
-      totalDebitAmount: totalDebit,
-      netAmount: totalCredit - totalDebit
-    };
+    return csvRows.join('\n');
   }
 
-  async runExtraction() {
-    console.log('Starting Porter data extraction for date:', this.currentDate);
+  downloadCSV(csvContent, filename) {
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
     
-    // Ensure config is loaded
-    if (!this.githubConfig) {
-      await this.loadConfig();
+    if (link.download !== undefined) {
+      const url = URL.createObjectURL(blob);
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     }
+  }
+
+  async runExtraction(startDate, endDate) {
+    console.log('Starting Porter trip data extraction...');
+    console.log('Date range:', startDate, 'to', endDate);
+    
+    this.setDateRange(startDate, endDate);
     
     // Wait for page to load completely
     if (document.readyState !== 'complete') {
@@ -187,38 +159,43 @@ class PorterDataExtractor {
     }
 
     // Additional wait for dynamic content
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    const transactions = this.extractTransactionData();
+    const trips = this.extractTripData();
     
-    if (transactions && transactions.length > 0) {
-      console.log(`Found ${transactions.length} transactions for ${this.currentDate}`);
-      return await this.sendDataToGitHub(transactions);
+    if (trips && trips.length > 0) {
+      console.log(`Found ${trips.length} trips in date range`);
+      
+      // Generate CSV
+      const csvContent = this.generateCSV(trips);
+      
+      // Create filename with date range
+      const startFormatted = startDate ? startDate.replace(/-/g, '') : 'all';
+      const endFormatted = endDate ? endDate.replace(/-/g, '') : 'all';
+      const filename = `porter_trips_${startFormatted}_to_${endFormatted}.csv`;
+      
+      // Download CSV
+      this.downloadCSV(csvContent, filename);
+      
+      return { success: true, count: trips.length };
     } else {
-      console.log(`No transactions found for ${this.currentDate}`);
-      // Still send empty data to track the attempt
-      return await this.sendDataToGitHub([]);
+      console.log('No trips found in the specified date range');
+      return { success: false, message: 'No trips found in date range' };
     }
   }
 }
 
 // Initialize when content script loads
 if (typeof window !== 'undefined' && window.location.hostname === 'pfe.porter.in') {
-  const extractor = new PorterDataExtractor();
+  const extractor = new PorterTripExtractor();
   
-  // Listen for messages from background script
+  // Listen for messages from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'extractData') {
-      extractor.runExtraction().then(success => {
-        sendResponse({ success });
+    if (message.action === 'extractTrips') {
+      extractor.runExtraction(message.startDate, message.endDate).then(result => {
+        sendResponse(result);
       });
       return true; // Keep message channel open for async response
     }
   });
-
-  // Auto-run if it's close to 11 PM
-  const now = new Date();
-  if (now.getHours() === 23 && now.getMinutes() >= 0) {
-    extractor.runExtraction();
-  }
 }

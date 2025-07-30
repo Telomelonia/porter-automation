@@ -1,127 +1,68 @@
 // Popup JavaScript
 document.addEventListener('DOMContentLoaded', function() {
-    // Load current status
-    loadStatus();
+    // Set default dates (last 7 days)
+    const today = new Date();
+    const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
     
-    // Load saved configuration
-    loadConfig();
+    document.getElementById('endDate').value = formatDate(today);
+    document.getElementById('startDate').value = formatDate(lastWeek);
     
-    // Set up event listeners
-    document.getElementById('saveConfig').addEventListener('click', saveConfig);
-    document.getElementById('extractNow').addEventListener('click', extractNow);
+    // Set up event listener
+    document.getElementById('extractBtn').addEventListener('click', extractData);
 });
 
-function loadStatus() {
-    chrome.runtime.sendMessage({ action: 'getStatus' }, function(response) {
-        if (response) {
-            updateStatus(response);
-        }
-    });
+function formatDate(date) {
+    return date.toISOString().split('T')[0];
 }
 
-function updateStatus(status) {
-    // Last sync time
-    const lastSyncElement = document.getElementById('lastSync');
-    if (status.lastSync) {
-        const syncDate = new Date(status.lastSync);
-        lastSyncElement.textContent = syncDate.toLocaleString();
-    } else {
-        lastSyncElement.textContent = 'Never';
-    }
+function extractData() {
+    const startDate = document.getElementById('startDate').value;
+    const endDate = document.getElementById('endDate').value;
+    const extractBtn = document.getElementById('extractBtn');
     
-    // Sync status
-    const syncStatusElement = document.getElementById('syncStatus');
-    if (status.lastSyncStatus === 'success') {
-        syncStatusElement.textContent = 'Success';
-        syncStatusElement.className = 'value status-success';
-    } else if (status.lastSyncStatus === 'failed') {
-        syncStatusElement.textContent = 'Failed';
-        syncStatusElement.className = 'value status-failed';
-        if (status.error) {
-            showAlert('error', `Last sync failed: ${status.error}`);
-        }
-    } else {
-        syncStatusElement.textContent = 'Never run';
-        syncStatusElement.className = 'value status-never';
-    }
-    
-    // Data count
-    const dataCountElement = document.getElementById('dataCount');
-    dataCountElement.textContent = status.lastDataCount || '0';
-}
-
-function loadConfig() {
-    chrome.storage.sync.get(['githubConfig'], function(result) {
-        if (result.githubConfig) {
-            const config = result.githubConfig;
-            document.getElementById('repoOwner').value = config.repoOwner || '';
-            document.getElementById('repoName').value = config.repoName || '';
-            document.getElementById('githubToken').value = config.token || '';
-        }
-    });
-}
-
-function saveConfig() {
-    const repoOwner = document.getElementById('repoOwner').value.trim();
-    const repoName = document.getElementById('repoName').value.trim();
-    const token = document.getElementById('githubToken').value.trim();
-    
-    if (!repoOwner || !repoName || !token) {
-        showAlert('error', 'Please fill in all GitHub configuration fields.');
+    // Validation
+    if (!startDate || !endDate) {
+        showAlert('error', 'Please select both start and end dates.');
         return;
     }
     
-    const config = {
-        repoOwner: repoOwner,
-        repoName: repoName,
-        token: token
-    };
+    if (new Date(startDate) > new Date(endDate)) {
+        showAlert('error', 'Start date cannot be after end date.');
+        return;
+    }
     
-    chrome.storage.sync.set({ githubConfig: config }, function() {
-        if (chrome.runtime.lastError) {
-            showAlert('error', 'Failed to save configuration.');
-        } else {
-            showAlert('success', 'Configuration saved successfully!');
-        }
-    });
-}
-
-function extractNow() {
-    const extractBtn = document.getElementById('extractNow');
+    // Disable button and show loading
     extractBtn.disabled = true;
     extractBtn.textContent = 'Extracting...';
     
-    // Check if we have a valid configuration
-    chrome.storage.sync.get(['githubConfig'], function(result) {
-        if (!result.githubConfig || !result.githubConfig.repoOwner || !result.githubConfig.repoName || !result.githubConfig.token) {
-            showAlert('error', 'Please configure GitHub settings first.');
+    // Check if Porter trip details tab is open
+    chrome.tabs.query({ url: 'https://pfe.porter.in/dashboard/trip_details*' }, function(tabs) {
+        if (tabs.length === 0) {
+            showAlert('error', 'Please open Porter trip details page first.');
             extractBtn.disabled = false;
-            extractBtn.textContent = 'Extract Now';
+            extractBtn.textContent = 'Extract Trip Data to CSV';
             return;
         }
         
-        // Check if Porter tab is open
-        chrome.tabs.query({ url: 'https://pfe.porter.in/dashboard/payments*' }, function(tabs) {
-            if (tabs.length === 0) {
-                showAlert('error', 'Please open Porter dashboard in a tab first.');
-                extractBtn.disabled = false;
-                extractBtn.textContent = 'Extract Now';
+        // Send extraction request to content script
+        chrome.tabs.sendMessage(tabs[0].id, {
+            action: 'extractTrips',
+            startDate: startDate,
+            endDate: endDate
+        }, function(response) {
+            extractBtn.disabled = false;
+            extractBtn.textContent = 'Extract Trip Data to CSV';
+            
+            if (chrome.runtime.lastError) {
+                showAlert('error', 'Failed to communicate with the page. Please refresh and try again.');
                 return;
             }
             
-            // Send manual extraction request
-            chrome.runtime.sendMessage({ action: 'manualExtract' }, function(response) {
-                extractBtn.disabled = false;
-                extractBtn.textContent = 'Extract Now';
-                
-                if (response && response.success) {
-                    showAlert('success', 'Data extraction initiated. Check the status in a few seconds.');
-                    // Reload status after a delay
-                    setTimeout(loadStatus, 3000);
-                } else {
-                    showAlert('error', 'Failed to initiate data extraction.');
-                }
-            });
+            if (response && response.success) {
+                showAlert('success', `Successfully extracted ${response.count} trips to CSV file!`);
+            } else {
+                showAlert('error', response?.message || 'No data found for the selected date range.');
+            }
         });
     });
 }
