@@ -3,6 +3,8 @@ class PorterTripExtractor {
   constructor() {
     this.startDate = null;
     this.endDate = null;
+    this.maxRetries = 50; // Maximum number of "See more" clicks to prevent infinite loops
+    this.waitTime = 2000; // Wait time between clicks (ms)
   }
 
   setDateRange(startDate, endDate) {
@@ -34,9 +36,6 @@ class PorterTripExtractor {
       start.setHours(0, 0, 0, 0);
       end.setHours(0, 0, 0, 0);
       
-      console.log(`Comparing dates: Trip=${tripDate.toDateString()}, Start=${start.toDateString()}, End=${end.toDateString()}`);
-      console.log(`In range: ${tripDate >= start && tripDate <= end}`);
-      
       return tripDate >= start && tripDate <= end;
     } catch (error) {
       console.error('Error parsing date:', porterDateString, error);
@@ -44,17 +43,200 @@ class PorterTripExtractor {
     }
   }
 
-  extractTripData() {
-    const trips = [];
+  // Check if we've reached the end of our date range
+  hasReachedDateRangeEnd() {
+    if (!this.startDate) return false; // If no start date filter, continue loading
     
-    // Look for table rows with trip data - try multiple selectors
+    const tableRows = this.getTableRows();
+    if (tableRows.length === 0) return true;
+    
+    // Check the last few rows to see if we've gone past our date range
+    const lastRows = Array.from(tableRows).slice(-5); // Check last 5 rows
+    
+    for (const row of lastRows) {
+      const cells = row.querySelectorAll('td');
+      if (cells.length >= 2) {
+        const dateText = cells[1]?.textContent?.trim();
+        if (dateText && dateText.match(/\d{2}\/\d{2}\/\d{4}/)) {
+          try {
+            const rowDate = this.parsePorterDate(dateText);
+            const startDate = this.parseInputDate(this.startDate);
+            rowDate.setHours(0, 0, 0, 0);
+            startDate.setHours(0, 0, 0, 0);
+            
+            // If we find a row that's before our start date, we've loaded enough
+            if (rowDate < startDate) {
+              console.log(`Reached date range end - found date ${dateText} before start date ${this.startDate}`);
+              return true;
+            }
+          } catch (error) {
+            console.error('Error checking date range end:', error);
+          }
+        }
+      }
+    }
+    
+    return false;
+  }
+
+  getTableRows() {
     let tableRows = document.querySelectorAll('tr.table-row-2');
     
     if (tableRows.length === 0) {
-      // Try alternative selectors
       tableRows = document.querySelectorAll('tr.MuiTableRow-root');
-      console.log(`Found ${tableRows.length} rows with alternative selector`);
     }
+    
+    return tableRows;
+  }
+
+  findSeeMoreButton() {
+    // Look for the "See more" button with the specific structure you provided
+    const seeMoreSelectors = [
+      'span.MuiFab-label', // Direct selector from your example
+      'button[aria-label*="more"]', // Alternative ARIA label
+      'button:contains("See more")', // Button containing text
+      '.MuiFab-root', // Material UI FAB button
+      '[data-testid*="load-more"]', // Common test ID pattern
+      '[data-testid*="see-more"]'
+    ];
+
+    for (const selector of seeMoreSelectors) {
+      const elements = document.querySelectorAll(selector);
+      for (const element of elements) {
+        const text = element.textContent || element.innerText || '';
+        if (text.toLowerCase().includes('see more') || text.toLowerCase().includes('load more')) {
+          // Find the clickable parent button
+          let clickableElement = element;
+          while (clickableElement && clickableElement.tagName !== 'BUTTON') {
+            clickableElement = clickableElement.parentElement;
+            if (clickableElement && (clickableElement.onclick || clickableElement.addEventListener)) {
+              break;
+            }
+          }
+          return clickableElement || element;
+        }
+      }
+    }
+
+    // Fallback: look for any element containing "See more" text
+    const allElements = document.querySelectorAll('*');
+    for (const element of allElements) {
+      if (element.textContent && element.textContent.toLowerCase().includes('see more')) {
+        return element;
+      }
+    }
+
+    return null;
+  }
+
+  async clickSeeMore() {
+    const seeMoreButton = this.findSeeMoreButton();
+    
+    if (!seeMoreButton) {
+      console.log('No "See more" button found');
+      return false;
+    }
+
+    console.log('Found "See more" button, clicking...', seeMoreButton);
+    
+    try {
+      // Try different click methods
+      if (seeMoreButton.click) {
+        seeMoreButton.click();
+      } else {
+        // Fallback to dispatch click event
+        const clickEvent = new MouseEvent('click', {
+          view: window,
+          bubbles: true,
+          cancelable: true
+        });
+        seeMoreButton.dispatchEvent(clickEvent);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error clicking "See more" button:', error);
+      return false;
+    }
+  }
+
+  async waitForNewData(previousRowCount) {
+    let attempts = 0;
+    const maxAttempts = 10; // Wait up to 10 seconds for new data
+    
+    while (attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      const currentRowCount = this.getTableRows().length;
+      if (currentRowCount > previousRowCount) {
+        console.log(`New data loaded: ${currentRowCount} total rows (was ${previousRowCount})`);
+        return true;
+      }
+      
+      attempts++;
+    }
+    
+    console.log('No new data loaded after waiting');
+    return false;
+  }
+
+  async loadAllData() {
+    console.log('Starting to load all data by clicking "See more"...');
+    let clickCount = 0;
+    let previousRowCount = 0;
+    let noNewDataCount = 0; // Track consecutive failures to load new data
+    
+    while (clickCount < this.maxRetries) {
+      const currentRowCount = this.getTableRows().length;
+      console.log(`Current row count: ${currentRowCount}`);
+      
+      // Check if we've reached our date range end
+      if (this.hasReachedDateRangeEnd()) {
+        console.log('Reached end of date range, stopping data loading');
+        break;
+      }
+      
+      // Try to find and click "See more" button
+      const clicked = await this.clickSeeMore();
+      
+      if (!clicked) {
+        console.log('No more "See more" button found, assuming all data is loaded');
+        break;
+      }
+      
+      clickCount++;
+      console.log(`Clicked "See more" ${clickCount} times`);
+      
+      // Wait for new data to load
+      const newDataLoaded = await this.waitForNewData(currentRowCount);
+      
+      if (!newDataLoaded) {
+        noNewDataCount++;
+        console.log(`No new data loaded after click ${clickCount}`);
+        
+        if (noNewDataCount >= 3) {
+          console.log('No new data loaded for 3 consecutive attempts, stopping');
+          break;
+        }
+      } else {
+        noNewDataCount = 0; // Reset counter if new data was loaded
+      }
+      
+      previousRowCount = currentRowCount;
+      
+      // Small delay between clicks to be respectful to the server
+      await new Promise(resolve => setTimeout(resolve, this.waitTime));
+    }
+    
+    const finalRowCount = this.getTableRows().length;
+    console.log(`Finished loading data. Total clicks: ${clickCount}, Final row count: ${finalRowCount}`);
+    
+    return finalRowCount;
+  }
+
+  extractTripData() {
+    const trips = [];
+    const tableRows = this.getTableRows();
     
     if (tableRows.length === 0) {
       console.log('No trip rows found - page may still be loading');
@@ -67,7 +249,6 @@ class PorterTripExtractor {
       try {
         const cells = row.querySelectorAll('td');
         if (cells.length < 10) {
-          console.log(`Row ${index + 1}: Only ${cells.length} cells, skipping`);
           return;
         }
 
@@ -92,11 +273,8 @@ class PorterTripExtractor {
         const amountText = amountCell?.textContent?.trim() || '₹ 0';
         const cleanAmount = amountText.replace(/[₹,\s]/g, '');
 
-        console.log(`Row ${index + 1}: Date=${startDate}, CRN=${crnNumber}`);
-
         // Check if date is in range (if range is set)
         if (startDate && this.isDateInRange(startDate)) {
-          console.log(`✓ Including row ${index + 1} in results`);
           trips.push({
             extractedAt: new Date().toISOString(),
             startDate: startDate,
@@ -111,8 +289,6 @@ class PorterTripExtractor {
             amountFormatted: amountText,
             rowIndex: index + 1
           });
-        } else {
-          console.log(`✗ Excluding row ${index + 1} - date not in range or invalid`);
         }
       } catch (error) {
         console.error(`Error processing row ${index + 1}:`, error);
@@ -196,6 +372,11 @@ class PorterTripExtractor {
     // Additional wait for dynamic content
     await new Promise(resolve => setTimeout(resolve, 3000));
 
+    // Load all data by clicking "See more" until no more data or date range is complete
+    const totalRows = await this.loadAllData();
+    console.log(`Loaded ${totalRows} total rows`);
+
+    // Extract trip data from all loaded rows
     const trips = this.extractTripData();
     
     if (trips && trips.length > 0) {
@@ -212,10 +393,10 @@ class PorterTripExtractor {
       // Download CSV
       this.downloadCSV(csvContent, filename);
       
-      return { success: true, count: trips.length };
+      return { success: true, count: trips.length, totalRowsLoaded: totalRows };
     } else {
       console.log('No trips found in the specified date range');
-      return { success: false, message: 'No trips found in date range' };
+      return { success: false, message: 'No trips found in date range', totalRowsLoaded: totalRows };
     }
   }
 }
