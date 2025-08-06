@@ -234,7 +234,278 @@ class PorterTripExtractor {
     return finalRowCount;
   }
 
-  extractTripData() {
+  async findAccordionButton(row) {
+    // Multiple strategies to find the accordion button
+    const strategies = [
+      // Strategy 1: Direct class-based selectors
+      () => row.querySelector('.accordion-row-button'),
+      () => row.querySelector('[class*="accordion"]'),
+      () => row.querySelector('.MuiSvgIcon-root.active'),
+      
+      // Strategy 2: SVG-based selectors (from your HTML example)
+      () => row.querySelector('svg[viewBox="0 0 24 24"]'),
+      () => row.querySelector('svg.MuiSvgIcon-root'),
+      
+      // Strategy 3: Look for clickable elements that might expand rows
+      () => {
+        const clickables = row.querySelectorAll('[role="button"], button, [onclick]');
+        for (const el of clickables) {
+          const parent = el.closest('td');
+          if (parent && (el.querySelector('svg') || el.innerHTML.includes('▼') || el.innerHTML.includes('▲'))) {
+            return el;
+          }
+        }
+        return null;
+      },
+      
+      // Strategy 4: Look in table cells for any expandable elements
+      () => {
+        const cells = row.querySelectorAll('td');
+        for (const cell of cells) {
+          const svgElements = cell.querySelectorAll('svg');
+          for (const svg of svgElements) {
+            // Look for expand/collapse icons
+            const pathElement = svg.querySelector('path');
+            if (pathElement) {
+              const pathData = pathElement.getAttribute('d');
+              // These are common expand/collapse icon paths
+              if (pathData && (
+                pathData.includes('L12 13.17') || // Your example path
+                pathData.includes('l4.59-4.58') ||
+                pathData.includes('M7.41') ||
+                pathData.includes('chevron') ||
+                pathData.includes('expand')
+              )) {
+                // Find the clickable parent
+                let clickable = svg;
+                while (clickable && clickable !== row) {
+                  if (clickable.onclick || clickable.getAttribute('role') === 'button' || 
+                      clickable.tagName === 'BUTTON' || clickable.style.cursor === 'pointer') {
+                    return clickable;
+                  }
+                  clickable = clickable.parentElement;
+                }
+                return svg; // Return the SVG as fallback
+              }
+            }
+          }
+        }
+        return null;
+      },
+      
+      // Strategy 5: Look for any element that might be clickable to expand
+      () => {
+        const allElements = row.querySelectorAll('*');
+        for (const el of allElements) {
+          const style = window.getComputedStyle(el);
+          if (style.cursor === 'pointer' && el.querySelector('svg')) {
+            return el;
+          }
+        }
+        return null;
+      }
+    ];
+
+    // Try each strategy
+    for (let i = 0; i < strategies.length; i++) {
+      try {
+        const button = strategies[i]();
+        if (button) {
+          console.log(`Found accordion button using strategy ${i + 1}:`, button);
+          return button;
+        }
+      } catch (error) {
+        console.log(`Strategy ${i + 1} failed:`, error);
+      }
+    }
+
+    // Final fallback: click anywhere on the row that might be clickable
+    console.log('No specific button found, trying row-level click');
+    return row;
+  }
+
+  async clickAccordion(row, index) {
+    console.log(`\n=== Processing Row ${index + 1} ===`);
+    
+    // First check if accordion is already expanded
+    let accordionContent = row.querySelector('.c-table-row-accordion') || 
+                          row.nextElementSibling?.querySelector('.c-table-row-accordion');
+    
+    if (accordionContent) {
+      console.log(`Row ${index + 1}: Accordion already expanded, skipping click`);
+      return true;
+    }
+
+    const accordionButton = await this.findAccordionButton(row);
+    
+    if (!accordionButton) {
+      console.log(`Row ${index + 1}: No accordion button found`);
+      // Try clicking on the row itself as last resort
+      try {
+        row.click();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        accordionContent = row.querySelector('.c-table-row-accordion') || 
+                          row.nextElementSibling?.querySelector('.c-table-row-accordion');
+        
+        if (accordionContent) {
+          console.log(`Row ${index + 1}: Row click worked!`);
+          return true;
+        }
+      } catch (error) {
+        console.log(`Row ${index + 1}: Row click failed:`, error);
+      }
+      return false;
+    }
+
+    // Try multiple click attempts with different methods
+    const clickMethods = [
+      () => accordionButton.click(),
+      () => {
+        const clickEvent = new MouseEvent('click', {
+          view: window,
+          bubbles: true,
+          cancelable: true
+        });
+        accordionButton.dispatchEvent(clickEvent);
+      },
+      () => {
+        const clickEvent = new Event('click', { bubbles: true });
+        accordionButton.dispatchEvent(clickEvent);
+      },
+      () => {
+        // Try focusing and pressing Enter
+        if (accordionButton.focus) accordionButton.focus();
+        const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true });
+        accordionButton.dispatchEvent(enterEvent);
+      }
+    ];
+
+    for (let attempt = 0; attempt < clickMethods.length; attempt++) {
+      try {
+        console.log(`Row ${index + 1}: Trying click method ${attempt + 1}`);
+        
+        clickMethods[attempt]();
+        
+        // Wait and check if accordion expanded
+        for (let check = 0; check < 15; check++) { // Check for up to 4.5 seconds
+          await new Promise(resolve => setTimeout(resolve, 300));
+          
+          accordionContent = row.querySelector('.c-table-row-accordion') || 
+                           row.nextElementSibling?.querySelector('.c-table-row-accordion');
+          
+          if (accordionContent) {
+            console.log(`Row ${index + 1}: Accordion expanded successfully with method ${attempt + 1} after ${(check + 1) * 300}ms`);
+            
+            // Scroll the accordion into view to ensure it's fully loaded
+            accordionContent.scrollIntoView({ behavior: 'instant', block: 'center' });
+            await new Promise(resolve => setTimeout(resolve, 200));
+            
+            return true;
+          }
+        }
+        
+        console.log(`Row ${index + 1}: Method ${attempt + 1} failed to expand accordion`);
+        
+      } catch (error) {
+        console.log(`Row ${index + 1}: Click method ${attempt + 1} threw error:`, error);
+      }
+    }
+    
+    console.log(`Row ${index + 1}: All click methods failed`);
+    return false;
+  }
+
+  extractAccordionData(row) {
+    // Look for the expanded accordion content - try multiple approaches
+    let accordionContent = row.querySelector('.c-table-row-accordion');
+    
+    if (!accordionContent) {
+      // Check next sibling row (accordion might be in separate row)
+      const nextRow = row.nextElementSibling;
+      if (nextRow && nextRow.querySelector('.c-table-row-accordion')) {
+        accordionContent = nextRow.querySelector('.c-table-row-accordion');
+      }
+    }
+    
+    if (!accordionContent) {
+      console.log('No accordion content found');
+      return {};
+    }
+
+    const accordionData = {};
+    console.log('Extracting accordion data...');
+
+    try {
+      // Extract pickup information - first timeline location
+      const timelineLocations = accordionContent.querySelectorAll('.timeline-location');
+      if (timelineLocations.length >= 1) {
+        const pickupLocation = timelineLocations[0];
+        const pickupTime = pickupLocation.querySelector('.time')?.textContent?.trim() || '';
+        const pickupAddress = pickupLocation.querySelector('.address')?.textContent?.trim() || '';
+        accordionData.pickupTime = pickupTime;
+        accordionData.pickupAddress = pickupAddress;
+        console.log('Pickup extracted:', { pickupTime, pickupAddress });
+      }
+
+      // Extract dropoff information - second timeline location
+      if (timelineLocations.length >= 2) {
+        const dropoffLocation = timelineLocations[1];
+        const dropoffTime = dropoffLocation.querySelector('.time')?.textContent?.trim() || '';
+        const dropoffAddress = dropoffLocation.querySelector('.address')?.textContent?.trim() || '';
+        accordionData.dropoffTime = dropoffTime;
+        accordionData.dropoffAddress = dropoffAddress;
+        console.log('Dropoff extracted:', { dropoffTime, dropoffAddress });
+      }
+
+      // Extract receiver details
+      const receiverSection = accordionContent.querySelector('.receiver-column .contacts .content');
+      if (receiverSection) {
+        const receiverName = receiverSection.querySelector('.name')?.textContent?.trim() || '';
+        const receiverMobile = receiverSection.querySelector('.mobile')?.textContent?.trim() || '';
+        accordionData.receiverName = receiverName;
+        accordionData.receiverMobile = receiverMobile;
+        console.log('Receiver extracted:', { receiverName, receiverMobile });
+      }
+
+      // Extract other details - be more specific with selectors
+      const infoColumn = accordionContent.querySelector('.info-column');
+      if (infoColumn) {
+        const columnItems = infoColumn.querySelectorAll('.column__item');
+        
+        columnItems.forEach(item => {
+          const title = item.querySelector('.title')?.textContent?.trim().toLowerCase() || '';
+          const content = item.querySelector('.content')?.textContent?.trim() || '';
+          
+          if (title.includes('duration')) {
+            accordionData.duration = content;
+            console.log('Duration extracted:', content);
+          } else if (title.includes('distance')) {
+            accordionData.distance = content;
+            console.log('Distance extracted:', content);
+          } else if (title.includes('comment')) {
+            accordionData.additionalComments = content;
+            console.log('Comments extracted:', content);
+          }
+        });
+      }
+
+      // Extract invoice link
+      const invoiceLink = accordionContent.querySelector('.invoice-section a');
+      if (invoiceLink) {
+        accordionData.invoiceUrl = invoiceLink.href || '';
+        console.log('Invoice URL extracted:', accordionData.invoiceUrl);
+      }
+
+    } catch (error) {
+      console.error('Error extracting accordion data:', error);
+    }
+
+    console.log('Final accordion data:', accordionData);
+    return accordionData;
+  }
+
+  async extractTripData() {
     const trips = [];
     const tableRows = this.getTableRows();
     
@@ -243,16 +514,19 @@ class PorterTripExtractor {
       return null;
     }
 
-    console.log(`Processing ${tableRows.length} rows...`);
+    console.log(`\n🚀 STARTING ACCORDION EXTRACTION FOR ${tableRows.length} ROWS 🚀`);
 
-    tableRows.forEach((row, index) => {
+    for (let index = 0; index < tableRows.length; index++) {
+      const row = tableRows[index];
+      
       try {
         const cells = row.querySelectorAll('td');
         if (cells.length < 10) {
-          return;
+          console.log(`Row ${index + 1}: Only ${cells.length} cells, skipping`);
+          continue;
         }
 
-        // Extract data from each cell based on the table structure
+        // Extract basic data from table cells
         const startDate = cells[1]?.textContent?.trim() || '';
         const crnNumber = cells[2]?.textContent?.trim() || '';
         const city = cells[3]?.textContent?.trim() || '';
@@ -275,7 +549,11 @@ class PorterTripExtractor {
 
         // Check if date is in range (if range is set)
         if (startDate && this.isDateInRange(startDate)) {
-          trips.push({
+          console.log(`\n📋 PROCESSING ROW ${index + 1}/${tableRows.length}`);
+          console.log(`   Date: ${startDate}, CRN: ${crnNumber}, Status: ${orderStatus}/${paymentStatus}`);
+          
+          // Initialize trip data with basic info
+          const tripData = {
             extractedAt: new Date().toISOString(),
             startDate: startDate,
             crnNumber: crnNumber,
@@ -288,14 +566,102 @@ class PorterTripExtractor {
             amount: cleanAmount,
             amountFormatted: amountText,
             rowIndex: index + 1
+          };
+          
+          // Try to expand accordion and get additional details
+          console.log(`   🔍 Attempting accordion expansion...`);
+          const accordionExpanded = await this.clickAccordion(row, index);
+          
+          if (accordionExpanded) {
+            console.log(`   ✅ Accordion expanded! Extracting detailed data...`);
+            
+            // Wait a bit more for content to fully render
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            const accordionData = this.extractAccordionData(row);
+            
+            // Merge accordion data
+            Object.assign(tripData, accordionData);
+            
+            console.log(`   📊 Extracted accordion fields:`, Object.keys(accordionData));
+            
+            // Optionally close accordion to keep UI clean
+            setTimeout(() => {
+              try {
+                this.clickAccordion(row, index);
+              } catch (e) {
+                // Ignore errors when closing
+              }
+            }, 100);
+            
+          } else {
+            console.log(`   ❌ Failed to expand accordion for row ${index + 1}`);
+            
+            // Set empty accordion fields
+            Object.assign(tripData, {
+              pickupTime: '',
+              pickupAddress: '',
+              dropoffTime: '',
+              dropoffAddress: '',
+              receiverName: '',
+              receiverMobile: '',
+              duration: '',
+              distance: '',
+              additionalComments: '',
+              invoiceUrl: ''
+            });
+          }
+
+          trips.push(tripData);
+          console.log(`   ✅ Row ${index + 1} added to results`);
+          
+        } else {
+          console.log(`Row ${index + 1}: Date ${startDate} not in range, skipping`);
+        }
+        
+      } catch (error) {
+        console.error(`❌ ERROR processing row ${index + 1}:`, error);
+        
+        // Still add basic data even if accordion fails
+        if (startDate && this.isDateInRange(startDate)) {
+          trips.push({
+            extractedAt: new Date().toISOString(),
+            startDate: startDate,
+            crnNumber: crnNumber || 'ERROR',
+            city: city || '',
+            customerName: customerName || '',
+            phoneNumber: phoneNumber || '',
+            vehicle: vehicle || '',
+            orderStatus: orderStatus || '',
+            paymentStatus: paymentStatus || '',
+            amount: cleanAmount || '0',
+            amountFormatted: amountText || '₹ 0',
+            rowIndex: index + 1,
+            pickupTime: 'ERROR',
+            pickupAddress: 'ERROR',
+            dropoffTime: 'ERROR',
+            dropoffAddress: 'ERROR',
+            receiverName: 'ERROR',
+            receiverMobile: 'ERROR',
+            duration: 'ERROR',
+            distance: 'ERROR',
+            additionalComments: 'ERROR',
+            invoiceUrl: 'ERROR'
           });
         }
-      } catch (error) {
-        console.error(`Error processing row ${index + 1}:`, error);
       }
-    });
+      
+      // Delay between rows to prevent overwhelming the page
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
 
-    console.log(`Total trips found in date range: ${trips.length}`);
+    console.log(`\n🎉 EXTRACTION COMPLETE! Found ${trips.length} trips in date range`);
+    
+    // Summary of accordion success rate
+    const successfulAccordions = trips.filter(trip => trip.pickupTime && trip.pickupTime !== '' && trip.pickupTime !== 'ERROR').length;
+    const successRate = ((successfulAccordions / trips.length) * 100).toFixed(1);
+    console.log(`📈 Accordion success rate: ${successfulAccordions}/${trips.length} (${successRate}%)`);
+    
     return trips;
   }
 
@@ -304,7 +670,7 @@ class PorterTripExtractor {
       return 'No data found for the selected date range';
     }
 
-    // CSV headers
+    // CSV headers - including new accordion fields
     const headers = [
       'Start Date',
       'CRN Number', 
@@ -315,6 +681,16 @@ class PorterTripExtractor {
       'Order Status',
       'Payment Status',
       'Amount',
+      'Pickup Time',
+      'Pickup Address',
+      'Dropoff Time', 
+      'Dropoff Address',
+      'Receiver Name',
+      'Receiver Mobile',
+      'Duration',
+      'Distance',
+      'Additional Comments',
+      'Invoice URL',
       'Extracted At'
     ];
 
@@ -332,6 +708,16 @@ class PorterTripExtractor {
         trip.orderStatus,
         trip.paymentStatus,
         trip.amount,
+        trip.pickupTime || '',
+        `"${trip.pickupAddress || ''}"`,
+        trip.dropoffTime || '',
+        `"${trip.dropoffAddress || ''}"`,
+        `"${trip.receiverName || ''}"`,
+        trip.receiverMobile || '',
+        trip.duration || '',
+        trip.distance || '',
+        `"${trip.additionalComments || ''}"`,
+        trip.invoiceUrl || '',
         trip.extractedAt
       ];
       csvRows.push(row.join(','));
@@ -377,7 +763,7 @@ class PorterTripExtractor {
     console.log(`Loaded ${totalRows} total rows`);
 
     // Extract trip data from all loaded rows
-    const trips = this.extractTripData();
+    const trips = await this.extractTripData();
     
     if (trips && trips.length > 0) {
       console.log(`Found ${trips.length} trips in date range`);
